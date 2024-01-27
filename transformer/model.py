@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 
 class Embedding(nn.Module):
         def __init__(self, d_model:int, vocab_size:int) -> None:
@@ -8,8 +9,8 @@ class Embedding(nn.Module):
                 self.embedding = nn.Embedding(vocab_size, d_model)
         
         def forward(self, x):
-                return self.embedding(x)*torch.sqrt(self.d_model) # (batch, seq_len, d_model)
-
+                return self.embedding(x)*torch.sqrt(torch.tensor(self.d_model, dtype=torch.int64, requires_grad=False)) # (batch, seq_len, d_model)
+                
 class PositionEmbedding(nn.Module):
         def __init__(self, d_model:int, dropout:float, seq_len:int) -> None:
                 super().__init__()
@@ -18,17 +19,18 @@ class PositionEmbedding(nn.Module):
 
                 pos_embedding = torch.empty(seq_len, d_model) # (seq_len, d_model)
                 pos = torch.arange(0,seq_len, dtype=torch.float).unsqueeze(1) # (seq_len,1)
-                denom = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float)*(-torch.log(10000.0)/d_model)) # (d_model/2)
-
+                denom = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float)*(-torch.log(torch.tensor(10000.0))/d_model)) # (d_model/2)
                 pos_embedding[:,0::2] = torch.sin(pos*denom) # (seq_len, d_model/2)
                 pos_embedding[:,1::2] = torch.cos(pos*denom) # (seq_len, d_model/2)
 
                 self.pos_embedding = pos_embedding.unsqueeze(0) # (1, seq_len, d_model)
 
-                self.register_buffer('pos_embedding', pos_embedding)
+
+                if not hasattr(self, 'pos_embedding'):
+                        self.register_buffer('pos_embedding', pos_embedding)
 
         def forward(self, x):
-                x = x+self.pos_embedding[:,:x.shape[1],:].requires_grad_(False)
+                x = x+(self.pos_embedding[:,:x.shape[1],:]).requires_grad_(False)
                 return self.dropout(x) # (batch, seq_len, d_model)
 
 class FeedForwardNetwork(nn.Module):
@@ -87,7 +89,7 @@ class MultiHeadAttention(nn.Module):
                 K = K.view(K.shape[0], K.shape[1], self.head, d_k).transpose(1,2) # (batch, head, seq_len, d_k)
                 V = V.view(V.shape[0], V.shape[1], self.head, d_k).transpose(1,2) # (batch, head, seq_len, d_k)
 
-                attention_score = (Q @ K.transpose(-1,-2))/torch.sqrt(d_k) # (batch, head, seq_len, seq_len)
+                attention_score = (Q @ K.transpose(-1,-2))/torch.sqrt(torch.tensor(d_k, dtype=torch.int64, requires_grad=False)) # (batch, head, seq_len, seq_len)
 
                 if mask is not None:
                         attention_score.masked_fill_(mask==0, -torch.inf)
@@ -105,9 +107,12 @@ class EncoderBlock(nn.Module):
                 self.linear = FeedForwardNetwork(d_model, d_ff)
                 self.residuals = nn.ModuleList([ResidualBlock(dropout) for i in range(2)])
 
+        def feed_attention(self, x, mask):
+                return self.attention(x,x,x,mask)
+
         def forward(self, x, mask):
-                x = self.residuals[0](x, lambda x: self.attention(x,x,x,mask))
-                x = self.residuals[1](x, self.linear(x))
+                x = self.residuals[0](x, lambda x: self.attention(x,x,x,mask)) #self.feed_attention(x,mask)
+                x = self.residuals[1](x, lambda x: self.linear(x))
                 return x # (batch, seq_len, d_model)
         
 class Encoder(nn.Module):
@@ -132,7 +137,7 @@ class DecoderBlock(nn.Module):
         def forward(self, x, encoder_out, src_mask, tgt_mask):
                 x = self.residuals[0](x, lambda x: self.masked_attention(x,x,x,tgt_mask))
                 x = self.residuals[1](x, lambda x: self.attention(x,encoder_out,encoder_out,src_mask))
-                x = self.residuals[2](x, self.linear(x))
+                x = self.residuals[2](x, lambda x: self.linear(x))
                 return x # (batch, seq_len, d_model)                
         
 class Decoder(nn.Module):
@@ -174,22 +179,22 @@ class Transformer(nn.Module):
                 self.src_pos_embedding = PositionEmbedding(d_model,dropout,src_seq_len)
                 self.tgt_pos_embedding = PositionEmbedding(d_model,dropout,tgt_seq_len)
                 
-                self.encoder = Encoder(N,d_model,head,d_ff,dropout)
-                self.decoder = Decoder(N,d_model,head,d_ff,dropout)
-                self.projection = Projection(d_model,tgt_vocab_size)
+                self.encoder_ = Encoder(N,d_model,head,d_ff,dropout)
+                self.decoder_ = Decoder(N,d_model,head,d_ff,dropout)
+                self.projection_ = Projection(d_model,tgt_vocab_size)
                 
         def encoder(self, x, src_mask):
                 x = self.src_pos_embedding(self.src_embedding(x))
-                x = self.encoder(x,src_mask)
+                x = self.encoder_(x,src_mask)
                 return x # (batch, seq_len, d_model)
         
         def decoder(self, x, encoder_out, src_mask, tgt_mask):
                 x = self.tgt_pos_embedding(self.tgt_embedding(x))
-                x = self.decoder(x,encoder_out,src_mask,tgt_mask)
+                x = self.decoder_(x,encoder_out,src_mask,tgt_mask)
                 return x # (batch, seq_len, d_model)
 
         def projection(self, x):
-                return self.projection(x) # (batch, seq_len, vocab_size)            
+                return self.projection_(x) # (batch, seq_len, vocab_size)            
 
 def transformer(src_seq_len:int, 
                 tgt_seq_len:int,
@@ -201,4 +206,11 @@ def transformer(src_seq_len:int,
                 d_ff:int=2048, 
                 dropout:float=0.1):
 
-        return Transformer(N, d_model, src_seq_len, tgt_seq_len, src_vocab_size, tgt_vocab_size, head, d_ff, dropout)
+        transformer = Transformer(N, d_model, src_seq_len, tgt_seq_len, src_vocab_size, tgt_vocab_size, head, d_ff, dropout)
+        
+        # initialize model parameters
+        for param in transformer.parameters():
+                if param.dim()>1:
+                        nn.init.xavier_uniform_(param)
+
+        return transformer
