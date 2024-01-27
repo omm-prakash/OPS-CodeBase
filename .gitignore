@@ -1,1 +1,4 @@
 transformer/data/*
+transformer/*weights/*
+transformer/__pycache__/*
+transformer/try.ipynb
