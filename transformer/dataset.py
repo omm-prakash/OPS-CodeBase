@@ -1,46 +1,61 @@
-from utils import Time
+import torch
+from torch.utils.data import Dataset
 
-import os
+class BilingualDataset(Dataset):
+        def __init__(self, raw_dataset, src_tokenizer, tgt_tokenizer, src_lang, tgt_lang, src_seq_len, tgt_seq_len) -> None:
+                super().__init__()
+                self.raw_dataset = raw_dataset
+                self.src_tokenizer = src_tokenizer
+                self.tgt_tokenizer = tgt_tokenizer
+                self.src_lang = src_lang
+                self.tgt_lang = tgt_lang
+                self.src_seq_len = src_seq_len
+                self.tgt_seq_len = tgt_seq_len
 
-from tokenizers import Tokenizer
-from tokenizers.pre_tokenizers import Whitespace
-from tokenizers.normalizers import Lowercase
-from tokenizers.models import WordLevel
-from tokenizers.trainers import WordLevelTrainer
-from datasets import load_dataset, get_dataset_split_names, get_dataset_config_names
+                self.encoder_input_format = '[SOS] {sen} [EOS]'
+                self.decoder_input_format = '[SOS] {sen}'
+                self.output_format = '{sen} [EOS]'
+                self.pad_token = src_tokenizer.token_to_id('[PAD]')
+        
+        def __len__(self):
+                return len(self.raw_dataset)
+        
+        def __getitem__(self, index):
+                sentence = self.raw_dataset[index]
+                encoder_input_sentence = self.encoder_input_format.format(sen = sentence['translation'][self.src_lang])
+                decoder_input_sentence = self.decoder_input_format.format(sen = sentence['translation'][self.tgt_lang])
+                output_sentence = self.output_format.format(sen = sentence['translation'][self.tgt_lang])
 
-dataset_name = 'opus_books' #config['dataset-name'] 
-config_name = 'en-fr' #config['config']
-# path = os.path.join(os.getcwd(), 'data', config['source-lang-path'])
+                # encoder input padding
+                encoder_input = self.src_tokenizer.encode(encoder_input_sentence)
+                encoder_input.pad(pad_id=self.pad_token, length=self.src_seq_len)
+                encoder_input = torch.tensor(encoder_input.ids, dtype=torch.int64)
 
-def get_data(dataset, language):
-        for data in dataset:
-                yield data['translation'][language] 
+                # decoder input padding
+                decoder_input = self.tgt_tokenizer.encode(decoder_input_sentence)
+                decoder_input.pad(pad_id=self.pad_token, length=self.tgt_seq_len)
+                decoder_input = torch.tensor(decoder_input.ids, dtype=torch.int64)
 
-print('\nStarting data loading..')
-tm1 = Time()
-tm1.start('data loading')
-print('>> The Hugging-Face dataset used:',dataset_name)
+                # label padding
+                label = self.tgt_tokenizer.encode(output_sentence)
+                label.pad(pad_id=self.pad_token, length=self.tgt_seq_len)
+                label = torch.tensor(label.ids, dtype=torch.int64)
 
-configs = get_dataset_config_names(dataset_name)
-print('>> Avilable translations from English:',[x for x in configs if x[:2]=='en'])
-print('>> Avilable splits in the dataset:',get_dataset_split_names(dataset_name, config_name))
+                assert encoder_input.size(0)==self.src_seq_len
+                assert decoder_input.size(0)==self.tgt_seq_len
+                assert label.size(0)==self.tgt_seq_len
 
-print('\nDownloading dataset..')
-tm2 = Time()
-tm2.start('download data')
-dataset = load_dataset(dataset_name, config_name, split=['train'], cache_dir='./data')
-tm2.end()
-print(dataset[0][10]['translation']['en'])
-print(dataset[0][10]['translation']['fr'])
-print('>> Number of translation samples:', dataset[0].num_rows)
-tm1.end()
-
-tokenizer = Tokenizer(WordLevel(unk_token='[UNK]'))
-tokenizer.normalizer = Lowercase()
-tokenizer.pre_tokenizer = Whitespace()
-trainer = WordLevelTrainer(show_progress=True, min_frequency=2, special_tokens=['[UNK]','[PAD]','[SOS]','[EOS]'])
-trainer.train_from_iterator(get_data(dataset, 'en'), trainer, length=dataset[0].num_rows)
-
-tokenizer.save(path, pretty=True)
-
+                return {
+                        'encoder_input': encoder_input, 
+                        'decoder_input': decoder_input,
+                        'label': label,
+                        'encoder_mask': (encoder_input!=self.pad_token).unsqueeze(0).unsqueeze(0).int(), # (1,1,seq_len)
+                        'decoder_mask': (decoder_input!=self.pad_token).unsqueeze(0).unsqueeze(0).int() & triangular_mask(self.tgt_seq_len), # (1,1,seq_len) & (1,seq_len,seq_len)
+                        'src_text': sentence['translation'][self.src_lang],
+                        'tgt_text': sentence['translation'][self.tgt_lang]
+                }
+        
+        
+def triangular_mask(size):
+        mask = torch.triu(torch.ones(1,size,size), diagonal=1)
+        return mask==0
