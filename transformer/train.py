@@ -113,7 +113,7 @@ def get_dataset(config):
         else:
                 print(f">> Data file not found. Downloading and saving data..")
                 tm.start('download data')
-                dataset = load_dataset(config['dataset_name'], config['dataset_config_name'], split=['train'])[0]
+                dataset = load_dataset(config['dataset_name'], config['dataset_config_name'], split=['train'], cache_dir=os.path.join(os.getcwd(), 'data'))[0]
                 print('>> Number of translation samples:', dataset.num_rows)                
                 # Save the data to a pickle file
                 with open(data_path, 'wb') as file:
@@ -153,12 +153,12 @@ def get_dataset(config):
                 'tgt_tokenizer': tgt_tokenizer
         }
 
-def train_model(config):
+def train_model(config):        
+        Path(f"{(config['dataset_config_name'])}-{config['model_folder']}").mkdir(parents=True, exist_ok=True)
+        dataset = get_dataset(config)
         print('\Setting up hardwares..')
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        Path(f"{(config['dataset_config_name'])}-{config['model_folder']}").mkdir(parents=True, exist_ok=True)
-        dataset = get_dataset(config)
         model = transformer(src_seq_len = config['src_seq_len'],
                             tgt_seq_len = config['tgt_seq_len'],
                             src_vocab_size = dataset['src_tokenizer'].get_vocab_size(),
