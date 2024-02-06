@@ -1,0 +1,3 @@
+[submodule "MemesNet"]
+	path = MemesNet
+	url = ./MemesNet
